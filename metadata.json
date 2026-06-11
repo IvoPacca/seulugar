@@ -1,0 +1,6 @@
+{
+  "name": "Seu Lugar",
+  "description": "Uma e-commerce angolana premium para produtos físicos e digitais, construído com Firebase Auth e integração administrativa do Supabase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

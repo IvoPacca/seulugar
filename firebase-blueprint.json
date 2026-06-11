@@ -1,0 +1,106 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Reflects authenticated store users, details, and site roles.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Unique user ID derived from Firebase Auth."
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address of the customer."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Full name or nickname displayed in profile."
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Avatar image link of the user."
+        },
+        "isAdmin": {
+          "type": "boolean",
+          "description": "High privilege administrative flag enabling product catalog changes and order status audits."
+        },
+        "phoneNumber": {
+          "type": "string"
+        },
+        "address": {
+          "type": "string"
+        },
+        "province": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "uid",
+        "email",
+        "displayName",
+        "photoURL",
+        "isAdmin",
+        "created_at"
+      ]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Captures customer checking transactions, deliver slips, and billing histories.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "userId": {
+          "type": "string"
+        },
+        "userEmail": {
+          "type": "string"
+        },
+        "userName": {
+          "type": "string"
+        },
+        "totalPrice": {
+          "type": "number"
+        },
+        "paymentMethod": {
+          "type": "string"
+        },
+        "paymentReference": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "userEmail",
+        "userName",
+        "totalPrice",
+        "paymentMethod",
+        "paymentReference",
+        "status",
+        "created_at"
+      ]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Stores customized contact references and admin statuses per client."
+    },
+    "orders/{orderId}": {
+      "schema": "Order",
+      "description": "Stores transactions, product indexes, and checkout delivery addresses."
+    }
+  }
+}
