@@ -36,7 +36,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     image_url: 'https://images.unsplash.com/photo-1542435503-956c469947f6?w=600&auto=format&fit=crop&q=80',
     type: 'digital',
     stock: 9999,
-    digital_link: 'https://ekjpcvrgtmwkgsxfjuxn.supabase.co/storage/v1/object/public/products/digital_preview.pdf',
+    digital_link: 'https://pay.kambafy.com/checkout/78f5636b-2683-410f-9ba6-7b3e53071c43',
     created_at: new Date().toISOString(),
     rating: 4.9,
     sales_count: 145
@@ -63,7 +63,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     image_url: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=80',
     type: 'digital',
     stock: 9999,
-    digital_link: 'https://ekjpcvrgtmwkgsxfjuxn.supabase.co/storage/v1/object/public/products/digital_preview.pdf',
+    digital_link: 'https://pay.kambafy.com/checkout/78f5636b-2683-410f-9ba6-7b3e53071c43',
     created_at: new Date().toISOString(),
     rating: 4.6,
     sales_count: 88
@@ -90,7 +90,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     image_url: 'https://images.unsplash.com/photo-1589829085413-56de8ae18c73?w=600&auto=format&fit=crop&q=80',
     type: 'digital',
     stock: 9999,
-    digital_link: 'https://ekjpcvrgtmwkgsxfjuxn.supabase.co/storage/v1/object/public/products/digital_preview.pdf',
+    digital_link: 'https://pay.kambafy.com/checkout/78f5636b-2683-410f-9ba6-7b3e53071c43',
     created_at: new Date().toISOString(),
     rating: 4.9,
     sales_count: 210
@@ -189,6 +189,7 @@ export function getSupabaseClient(): SupabaseClient | null {
 export async function fetchAllProducts(): Promise<Product[]> {
   const client = getSupabaseClient();
   const { useFallback } = getSupabaseCredentials();
+  let baseProducts: Product[] = [];
 
   if (client && !useFallback) {
     try {
@@ -199,7 +200,7 @@ export async function fetchAllProducts(): Promise<Product[]> {
 
       if (error) throw error;
       if (data) {
-        return data.map((item: any) => ({
+        baseProducts = data.map((item: any) => ({
           id: item.id,
           name: item.name,
           description: item.description || '',
@@ -211,7 +212,12 @@ export async function fetchAllProducts(): Promise<Product[]> {
           digital_link: item.digital_link || '',
           created_at: item.created_at,
           rating: item.rating || 5.0,
-          sales_count: item.sales_count || 0
+          sales_count: item.sales_count || 0,
+          colors: item.colors || [],
+          free_shipping: !!item.free_shipping,
+          qty_discount_min: item.qty_discount_min ? Number(item.qty_discount_min) : undefined,
+          qty_discount_percent: item.qty_discount_percent ? Number(item.qty_discount_percent) : undefined,
+          qty_free_shipping_min: item.qty_free_shipping_min ? Number(item.qty_free_shipping_min) : undefined
         }));
       }
     } catch (e) {
@@ -219,17 +225,30 @@ export async function fetchAllProducts(): Promise<Product[]> {
     }
   }
 
-  const cached = localStorage.getItem('seulugar_local_products');
-  if (cached) {
-    try {
-      return JSON.parse(cached);
-    } catch {
-      return INITIAL_PRODUCTS;
+  if (baseProducts.length === 0) {
+    const cached = localStorage.getItem('seulugar_local_products');
+    if (cached) {
+      try {
+        baseProducts = JSON.parse(cached);
+      } catch {
+        baseProducts = INITIAL_PRODUCTS;
+      }
+    } else {
+      localStorage.setItem('seulugar_local_products', JSON.stringify(INITIAL_PRODUCTS));
+      baseProducts = INITIAL_PRODUCTS;
     }
   }
 
-  localStorage.setItem('seulugar_local_products', JSON.stringify(INITIAL_PRODUCTS));
-  return INITIAL_PRODUCTS;
+  // Ensure KambaPay checkout link is assigned as default if none is defined
+  return baseProducts.map((p) => {
+    if (p.type === 'digital' && (!p.digital_link || p.digital_link === 'https://ekjpcvrgtmwkgsxfjuxn.supabase.co/storage/v1/object/public/products/digital_preview.pdf')) {
+      return {
+        ...p,
+        digital_link: 'https://pay.kambafy.com/checkout/78f5636b-2683-410f-9ba6-7b3e53071c43'
+      };
+    }
+    return p;
+  });
 }
 
 // Helper: Insert a new product
@@ -257,7 +276,12 @@ export async function createProductInDatabase(productData: Omit<Product, 'id' | 
           image_url: productData.image_url,
           type: productData.type,
           stock: productData.stock,
-          digital_link: productData.digital_link
+          digital_link: productData.digital_link,
+          colors: productData.colors,
+          free_shipping: productData.free_shipping,
+          qty_discount_min: productData.qty_discount_min,
+          qty_discount_percent: productData.qty_discount_percent,
+          qty_free_shipping_min: productData.qty_free_shipping_min
         }])
         .select();
 
@@ -276,7 +300,12 @@ export async function createProductInDatabase(productData: Omit<Product, 'id' | 
           digital_link: item.digital_link || '',
           created_at: item.created_at,
           rating: 5.0,
-          sales_count: 0
+          sales_count: 0,
+          colors: item.colors || [],
+          free_shipping: !!item.free_shipping,
+          qty_discount_min: item.qty_discount_min ? Number(item.qty_discount_min) : undefined,
+          qty_discount_percent: item.qty_discount_percent ? Number(item.qty_discount_percent) : undefined,
+          qty_free_shipping_min: item.qty_free_shipping_min ? Number(item.qty_free_shipping_min) : undefined
         };
       }
     } catch (e) {
@@ -307,7 +336,12 @@ export async function updateProductInDatabase(productId: string, productData: Pa
           image_url: productData.image_url,
           type: productData.type,
           stock: productData.stock,
-          digital_link: productData.digital_link
+          digital_link: productData.digital_link,
+          colors: productData.colors,
+          free_shipping: productData.free_shipping,
+          qty_discount_min: productData.qty_discount_min,
+          qty_discount_percent: productData.qty_discount_percent,
+          qty_free_shipping_min: productData.qty_free_shipping_min
         })
         .eq('id', productId);
 

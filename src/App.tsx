@@ -22,6 +22,7 @@ import { STORE_CATEGORIES, formatKwanza } from './utils';
 import Navbar from './components/Navbar';
 import ProductCard from './components/ProductCard';
 import ProductDetailModal from './components/ProductDetailModal';
+import LibraryShelf from './components/LibraryShelf';
 import CheckoutModal from './components/CheckoutModal';
 import AuthModal from './components/AuthModal';
 import MyOrdersModal from './components/MyOrdersModal';
@@ -154,8 +155,13 @@ export default function App() {
   };
 
   // 4. Cart Add Control
-  const handleAddToCart = (product: Product, quantity = 1) => {
-    const existingIndex = cart.findIndex((item) => item.product.id === product.id);
+  const handleAddToCart = (product: Product, quantity = 1, selectedColor?: string) => {
+    if (!user) {
+      setIsAuthOpen(true);
+      setToastMessage('Sem login não se faz compra! Por favor, inicie sessão.');
+      return;
+    }
+    const existingIndex = cart.findIndex((item) => item.product.id === product.id && item.selectedColor === selectedColor);
     if (existingIndex > -1) {
       const updatedCart = [...cart];
       // Virtual/digital products shouldn't have multiplier stack issues
@@ -167,14 +173,14 @@ export default function App() {
       }
       setCart(updatedCart);
     } else {
-      setCart([...cart, { product, quantity }]);
+      setCart([...cart, { product, quantity, selectedColor }]);
     }
     // Launch sidebar drawer notification
     setIsCartOpen(true);
   };
 
-  const handleUpdateCartQty = (productId: string, quantity: number) => {
-    const targetIdx = cart.findIndex(item => item.product.id === productId);
+  const handleUpdateCartQty = (productId: string, quantity: number, selectedColor?: string) => {
+    const targetIdx = cart.findIndex(item => item.product.id === productId && item.selectedColor === selectedColor);
     if (targetIdx === -1) return;
     
     const targetProduct = cart[targetIdx].product;
@@ -185,8 +191,8 @@ export default function App() {
     setCart(updated);
   };
 
-  const handleRemoveFromCart = (productId: string) => {
-    setCart(cart.filter(item => item.product.id !== productId));
+  const handleRemoveFromCart = (productId: string, selectedColor?: string) => {
+    setCart(cart.filter(item => !(item.product.id === productId && item.selectedColor === selectedColor)));
   };
 
   const handleClearCart = () => {
@@ -203,7 +209,7 @@ export default function App() {
       province: string;
       street: string;
     };
-  }) => {
+  }): Promise<string | undefined> => {
     if (!user) {
       setIsAuthOpen(true);
       throw new Error('Identidade necessária para faturar.');
@@ -216,18 +222,53 @@ export default function App() {
         name: item.product.name,
         price: item.product.price,
         quantity: item.quantity,
-        type: item.product.type
+        type: item.product.type,
+        selectedColor: item.selectedColor || undefined
       };
       if (item.product.digital_link !== undefined) {
-        orderItem.digital_link = item.product.digital_link;
+        // Prevent storing huge base64 strings in Firestore (1MB limit)
+        const link = item.product.digital_link;
+        if (link.startsWith('data:') || link.length > 2000) {
+          orderItem.digital_link = '[data_link_local]';
+        } else {
+          orderItem.digital_link = link;
+        }
       }
       return orderItem;
     });
 
     const isOnlyDigital = cart.every(item => item.product.type === 'digital');
-    const subtotal = cart.reduce((acc, item) => acc + item.product.price * item.quantity, 0);
-    const shippingFee = orderData.shippingAddress.province === 'Luanda' ? 2500 : 7500;
-    const finalTotal = isOnlyDigital ? subtotal : subtotal + shippingFee;
+    
+    // Calculate quantity discounts
+    let totalDiscount = 0;
+    cart.forEach((item) => {
+      const p = item.product;
+      if (p.qty_discount_min && p.qty_discount_percent && item.quantity >= p.qty_discount_min) {
+        const itemSubtotal = p.price * item.quantity;
+        const discountAmount = Math.floor(itemSubtotal * (p.qty_discount_percent / 100));
+        totalDiscount += discountAmount;
+      }
+    });
+
+    const subtotal = cart.reduce((acc, item) => acc + item.product.price * item.quantity, 0) - totalDiscount;
+
+    // Check for shipping exemptions
+    let qualifiesForFreeShipping = false;
+    if (!isOnlyDigital) {
+      const physicalItems = cart.filter(item => item.product.type === 'physical');
+      if (physicalItems.length > 0) {
+        const allPhysicalAreFree = physicalItems.every(item => {
+          const p = item.product;
+          const isFree = !!p.free_shipping;
+          const metQtyThreshold = !!(p.qty_free_shipping_min && item.quantity >= p.qty_free_shipping_min);
+          return isFree || metQtyThreshold;
+        });
+        qualifiesForFreeShipping = allPhysicalAreFree;
+      }
+    }
+
+    const shippingFee = isOnlyDigital || qualifiesForFreeShipping ? 0 : 2500;
+    const finalTotal = subtotal + shippingFee;
 
     const ord: Order = {
       id: orderId,
@@ -250,6 +291,7 @@ export default function App() {
       
       // Update store orders listing state immediately
       setOrders([ord, ...orders]);
+      return orderId;
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `${path}/${orderId}`);
     }
@@ -273,7 +315,18 @@ export default function App() {
     const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
                           p.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
                           p.category.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCategory = selectedCategory === 'Todos' || p.category === selectedCategory;
+    
+    let matchesCategory = false;
+    if (selectedCategory === 'Todos') {
+      matchesCategory = true;
+    } else if (selectedCategory === 'physical') {
+      matchesCategory = p.type === 'physical';
+    } else if (selectedCategory === 'digital') {
+      matchesCategory = p.type === 'digital';
+    } else {
+      matchesCategory = p.category === selectedCategory;
+    }
+
     return matchesSearch && matchesCategory;
   });
 
@@ -321,214 +374,169 @@ export default function App() {
                   onRefreshProducts={handleRefreshProducts}
                   onRefreshOrders={handleRefreshOrders}
                   onUpdateOrderStatus={handleUpdateOrderStatus}
+                  user={user}
                 />
               </motion.div>
             ) : (
               /* CUSTOMER FRONT END INTERFACE */
               <div className="space-y-8">
                 
-                {/* ADVANCED BENTO GRID SYSTEM */}
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                  
-                  {/* BENTO CARD 1: PRIMARY HERO showcase (col-span-8) */}
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.98 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ duration: 0.4 }}
-                    className="lg:col-span-8 bg-white border border-gray-100 rounded-[2.5rem] p-8 md:p-12 relative overflow-hidden flex flex-col justify-center min-h-[360px] shadow-sm select-none"
-                  >
-                    <div className="relative z-10 max-w-lg space-y-5">
-                      <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-50 rounded-full border border-blue-100 text-xs font-black text-[#2563EB] uppercase tracking-wider">
-                        <Sparkles className="w-3.5 h-3.5" /> Destaques da Loja
-                      </div>
-                      
-                      <h2 className="text-3xl md:text-5xl font-black text-gray-900 tracking-tight leading-[1.1]">
-                        Tudo o que procuras, <span className="text-[#2563EB]">num só</span> lugar.
-                      </h2>
-                      
-                      <p className="text-xs md:text-sm text-gray-400 leading-relaxed font-semibold">
-                        A plataforma e-commerce premium em Angola de extrema confiança. Explore produtos físicos exclusivos e as melhores soluções digitais do mercado.
-                      </p>
-                      
-                      <div className="flex flex-wrap gap-3 pt-2">
-                        <button
-                          onClick={() => setSelectedCategory('Eletrónicos')}
-                          className="px-6 py-3.5 text-xs font-extrabold text-white bg-[#2563EB] hover:bg-blue-600 rounded-xl shadow-md transition-all active:scale-95 uppercase tracking-wider"
-                        >
-                          Ver Tecnologia
-                        </button>
-                        <button
-                          onClick={() => setSelectedCategory('Todos')}
-                          className="px-6 py-3.5 text-xs font-extrabold text-gray-700 bg-gray-50 hover:bg-gray-100 rounded-xl border border-gray-150 transition-all uppercase tracking-wider"
-                        >
-                          Ver Todo o Catálogo
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Technical / Geometric vector graphic element behind the text */}
-                    <div className="absolute right-0 bottom-0 top-0 w-1/2 hidden md:flex items-center justify-center opacity-8 pointer-events-none select-none">
-                      <svg className="w-4/5 h-4/5 text-[#2563EB]" viewBox="0 0 100 100" fill="none" stroke="currentColor" strokeWidth="1.5">
-                        <circle cx="50" cy="50" r="40" strokeDasharray="4 4" />
-                        <circle cx="50" cy="50" r="28" />
-                        <path d="M10 50H90M50 10V90" strokeWidth="0.5" />
-                      </svg>
-                    </div>
-                  </motion.div>
-
-                  {/* BENTO CARD 2: DIGITAL SHOWCASE (col-span-4) */}
-                  <motion.div
-                    onClick={() => setSelectedCategory('Livros')}
-                    initial={{ opacity: 0, scale: 0.98 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ duration: 0.4, delay: 0.1 }}
-                    className="lg:col-span-4 bg-[#1F2937] rounded-[2.5rem] p-8 text-white flex flex-col justify-between min-h-[360px] shadow-sm relative overflow-hidden group cursor-pointer border border-[#2d3748]"
-                  >
-                    <div className="absolute -right-3 -top-3 w-32 h-32 bg-[#F97316] rounded-full blur-3xl opacity-20 group-hover:opacity-35 transition-opacity" />
+                {/* ADVANCED BENTO GRID SYSTEM - Omitted when searching to leave only products */}
+                {!searchQuery.trim() && (
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                     
-                    <div className="space-y-4">
-                      <span className="inline-flex px-3 py-1 bg-white/10 text-[10px] font-extrabold rounded-full uppercase tracking-wider text-[#F97316] border border-white/5">
-                        Produtos Digitais
-                      </span>
-                      <h3 className="text-2xl font-bold tracking-tight text-white m-0">
-                        Universo Digital
-                      </h3>
-                      <p className="text-xs text-gray-300 leading-relaxed font-semibold">
-                        Ebooks imperdíveis e materiais práticos de excelência. downloads imediatos garantidos após comprovação bancária.
-                      </p>
-                    </div>
-
-                    <div className="pt-6 flex items-end justify-end">
-                      <div className="w-12 h-12 rounded-full bg-white/10 group-hover:bg-[#F97316] transition-colors flex items-center justify-center text-white">
-                        <ArrowRight className="w-5 h-5" />
-                      </div>
-                    </div>
-                  </motion.div>
-
-                  {/* BENTO CARD 3: LOGISTICS / PROVINCES (col-span-4) */}
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.98 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ duration: 0.4, delay: 0.15 }}
-                    className="lg:col-span-4 bg-[#F97316] rounded-[2.5rem] p-8 text-white flex flex-col justify-between min-h-[300px] shadow-sm relative overflow-hidden group border border-[#f97316]/80"
-                  >
-                    <div className="absolute -left-6 -bottom-6 w-36 h-36 bg-[#2563EB] rounded-full blur-3xl opacity-20 group-hover:opacity-35 transition-opacity" />
-                    
-                    <div className="space-y-4">
-                      <span className="inline-flex px-3 py-1 bg-white/15 text-[10px] font-extrabold rounded-full uppercase tracking-wider text-white border border-white/5">
-                        Logística Seu Lugar
-                      </span>
-                      <h3 className="text-2xl font-bold tracking-tight text-white m-0">
-                        Entrega em Luanda
-                      </h3>
-                      <p className="text-xs text-orange-50 leading-relaxed font-semibold">
-                        Enviamos produtos físicos com toda a segurança diretamente para a sua morada em Luanda entre 24 a 48 horas!
-                      </p>
-                    </div>
-
-                    <div className="pt-6 flex items-center justify-between">
-                      <div className="text-xs font-black uppercase tracking-widest text-[#1F2937] bg-white px-3 py-1.5 rounded-full inline-flex items-center gap-1">
-                        <ShieldCheck className="w-3.5 h-3.5" /> 100% SEGURO
-                      </div>
-                      <div className="w-11 h-11 bg-white/15 rounded-full flex items-center justify-center text-white">
-                        <Package className="w-5 h-5 animate-bounce-slow" />
-                      </div>
-                    </div>
-                  </motion.div>
-
-                  {/* BENTO CARD 4: PREMIUM CLUB VIP (col-span-8) */}
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.98 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ duration: 0.4, delay: 0.2 }}
-                    className="lg:col-span-8 bg-gradient-to-br from-[#2563EB] to-blue-800 text-white rounded-[2.5rem] p-8 md:p-10 flex flex-col md:flex-row md:items-center justify-between gap-6 shadow-sm relative overflow-hidden border border-blue-700"
-                  >
-                    <div className="absolute right-0 bottom-0 top-0 w-1/3 bg-radial from-white/15 to-transparent pointer-events-none" />
-                    
-                    <div className="space-y-3 max-w-lg z-10">
-                      <div className="text-[10px] font-black uppercase tracking-widest text-orange-400 bg-white/10 border border-white/15 px-3 py-1 rounded-full inline-block">
-                        Fidelidade Premium
-                      </div>
-                      <h3 className="text-2xl font-bold tracking-tight">
-                        Adira ao Premium Club SeuLugar
-                      </h3>
-                      <p className="text-xs text-blue-105 leading-relaxed font-semibold">
-                        Registe-se hoje para gerir os seus pedidos, e receba portes grátis em todas as compras físicas acima de Kz 50.000 em Angola!
-                      </p>
-                    </div>
-
-                    <div className="shrink-0 z-10">
-                      <button
-                        onClick={() => {
-                          setToastMessage('Em desenvolvimento');
-                        }}
-                        className="w-full md:w-auto px-6 py-3.5 bg-white text-[#2563EB] hover:bg-orange-50 font-black text-xs rounded-xl shadow-md transition-all active:scale-95 uppercase tracking-wider"
-                      >
-                        Explorar
-                      </button>
-                    </div>
-                  </motion.div>
-
-                </div>
-
-                {/* BENTO BLOCK: CATEGORIES EXPLORER */}
-                <div className="bg-white border border-gray-100 rounded-[2.5rem] p-8 shadow-sm flex flex-col gap-6">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div>
-                      <h3 className="text-xl font-bold text-[#1F2937] tracking-tight">Categorias de Excelência</h3>
-                      <p className="text-xs text-gray-400 mt-1">Selecione filtros instantâneos para agilizar as suas pesquisas de produtos.</p>
-                    </div>
-                    <span className="shrink-0 px-4 py-1.5 bg-gray-50 text-gray-500 font-extrabold text-[10px] rounded-full border border-gray-150 uppercase tracking-widest self-start sm:self-center">
-                      Showing {filteredProducts.length} articles
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2 overflow-x-auto pb-1.5 scrollbar-thin">
-                    {STORE_CATEGORIES.map((cat) => {
-                      const isSelected = selectedCategory === cat;
-                      return (
-                        <button
-                          key={cat}
-                          onClick={() => setSelectedCategory(cat)}
-                          className={`px-5 py-3 rounded-xl text-xs font-bold whitespace-nowrap transition-all select-none border border-transparent uppercase tracking-wider ${
-                            isSelected 
-                              ? 'bg-[#2563EB] text-white shadow-md' 
-                              : 'bg-gray-100 text-gray-600 hover:bg-gray-200/50 shadow-sm'
-                          }`}
-                        >
-                          {cat}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Products Grid Feed */}
-                {filteredProducts.length === 0 ? (
-                  <div className="py-20 text-center bg-white border border-gray-100 rounded-2xl shadow-sm">
-                    <p className="text-sm text-gray-400 font-medium">Não foram localizados artigos correspondentes à pesquisa.</p>
-                    <button
-                      onClick={() => {
-                        setSearchQuery('');
-                        setSelectedCategory('Todos');
-                      }}
-                      className="mt-4 px-4.5 py-2 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"
+                    {/* BENTO CARD 1: PRIMARY HERO showcase (col-span-8) */}
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.98 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ duration: 0.4 }}
+                      className="lg:col-span-8 bg-white border border-gray-100 rounded-[2.5rem] p-8 md:p-12 relative overflow-hidden flex flex-col justify-center min-h-[360px] shadow-sm select-none"
                     >
-                      Limpar Filtros
-                    </button>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                    {filteredProducts.map((prod) => (
-                      <ProductCard
-                        key={prod.id}
-                        product={prod}
-                        onViewDetails={(p) => { setSelectedProduct(p); }}
-                        onAddToCart={(p) => { handleAddToCart(p, 1); }}
-                      />
-                    ))}
+                      <div className="relative z-10 max-w-lg space-y-5">
+                        <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-50 rounded-full border border-blue-100 text-xs font-black text-[#2563EB] uppercase tracking-wider">
+                          <Sparkles className="w-3.5 h-3.5" /> Destaques da Loja
+                        </div>
+                        
+                        <h2 className="text-3xl md:text-5xl font-black text-gray-900 tracking-tight leading-[1.1]">
+                          Tudo o que procuras, <span className="text-[#2563EB]">num só</span> lugar.
+                        </h2>
+                        
+                        <p className="text-xs md:text-sm text-gray-400 leading-relaxed font-semibold">
+                          A plataforma e-commerce premium em Angola de extrema confiança. Explore produtos físicos exclusivos e as melhores soluções digitais do mercado.
+                        </p>
+                        
+                        <div className="flex flex-wrap gap-3 pt-2">
+                          <button
+                            onClick={() => setSelectedCategory('Eletrónicos')}
+                            className="px-6 py-3.5 text-xs font-extrabold text-white bg-[#2563EB] hover:bg-blue-600 rounded-xl shadow-md transition-all active:scale-95 uppercase tracking-wider"
+                          >
+                            Ver Tecnologia
+                          </button>
+                          <button
+                            onClick={() => setSelectedCategory('Todos')}
+                            className="px-6 py-3.5 text-xs font-extrabold text-gray-700 bg-gray-50 hover:bg-gray-100 rounded-xl border border-gray-150 transition-all uppercase tracking-wider"
+                          >
+                            Ver Todo o Catálogo
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Technical / Geometric vector graphic element behind the text */}
+                      <div className="absolute right-0 bottom-0 top-0 w-1/2 hidden md:flex items-center justify-center opacity-8 pointer-events-none select-none">
+                        <svg className="w-4/5 h-4/5 text-[#2563EB]" viewBox="0 0 100 100" fill="none" stroke="currentColor" strokeWidth="1.5">
+                          <circle cx="50" cy="50" r="40" strokeDasharray="4 4" />
+                          <circle cx="50" cy="50" r="28" />
+                          <path d="M10 50H90M50 10V90" strokeWidth="0.5" />
+                        </svg>
+                      </div>
+                    </motion.div>
+
+                    {/* BENTO CARD 2: DIGITAL SHOWCASE (col-span-4) */}
+                    <motion.div
+                      onClick={() => setSelectedCategory('Livros')}
+                      initial={{ opacity: 0, scale: 0.98 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ duration: 0.4, delay: 0.1 }}
+                      className="lg:col-span-4 bg-[#1F2937] rounded-[2.5rem] p-8 text-white flex flex-col justify-between min-h-[360px] shadow-sm relative overflow-hidden group cursor-pointer border border-[#2d3748]"
+                    >
+                      <div className="absolute -right-3 -top-3 w-32 h-32 bg-[#F97316] rounded-full blur-3xl opacity-20 group-hover:opacity-35 transition-opacity" />
+                      
+                      <div className="space-y-4">
+                        <span className="inline-flex px-3 py-1 bg-white/10 text-[10px] font-extrabold rounded-full uppercase tracking-wider text-[#F97316] border border-white/5">
+                          Produtos Digitais
+                        </span>
+                        <h3 className="text-2xl font-bold tracking-tight text-white m-0">
+                          Universo Digital
+                        </h3>
+                        <p className="text-xs text-gray-300 leading-relaxed font-semibold">
+                          Ebooks imperdíveis e materiais práticos de excelência. downloads imediatos garantidos após comprovação bancária.
+                        </p>
+                      </div>
+
+                      <div className="pt-6 flex items-end justify-end">
+                        <div className="w-12 h-12 rounded-full bg-white/10 group-hover:bg-[#F97316] transition-colors flex items-center justify-center text-white">
+                          <ArrowRight className="w-5 h-5" />
+                        </div>
+                      </div>
+                    </motion.div>
+
+                    {/* BENTO CARD 3: LOGISTICS / PROVINCES (col-span-4) */}
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.98 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ duration: 0.4, delay: 0.15 }}
+                      className="lg:col-span-4 bg-[#F97316] rounded-[2.5rem] p-8 text-white flex flex-col justify-between min-h-[300px] shadow-sm relative overflow-hidden group border border-[#f97316]/80"
+                    >
+                      <div className="absolute -left-6 -bottom-6 w-36 h-36 bg-[#2563EB] rounded-full blur-3xl opacity-20 group-hover:opacity-35 transition-opacity" />
+                      
+                      <div className="space-y-4">
+                        <span className="inline-flex px-3 py-1 bg-white/15 text-[10px] font-extrabold rounded-full uppercase tracking-wider text-white border border-white/5">
+                          Logística Seu Lugar
+                        </span>
+                        <h3 className="text-2xl font-bold tracking-tight text-white m-0">
+                          Entrega em Luanda
+                        </h3>
+                        <p className="text-xs text-orange-50 leading-relaxed font-semibold">
+                          Enviamos produtos físicos com toda a segurança diretamente para a sua morada em Luanda entre 24 a 48 horas!
+                        </p>
+                      </div>
+
+                      <div className="pt-6 flex items-center justify-between">
+                        <div className="text-xs font-black uppercase tracking-widest text-[#1F2937] bg-white px-3 py-1.5 rounded-full inline-flex items-center gap-1">
+                          <ShieldCheck className="w-3.5 h-3.5" /> 100% SEGURO
+                        </div>
+                        <div className="w-11 h-11 bg-white/15 rounded-full flex items-center justify-center text-white">
+                          <Package className="w-5 h-5" />
+                        </div>
+                      </div>
+                    </motion.div>
+
+                    {/* BENTO CARD 4: PREMIUM CLUB VIP (col-span-8) */}
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.98 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ duration: 0.4, delay: 0.2 }}
+                      className="lg:col-span-8 bg-gradient-to-br from-[#2563EB] to-blue-800 text-white rounded-[2.5rem] p-8 md:p-10 flex flex-col md:flex-row md:items-center justify-between gap-6 shadow-sm relative overflow-hidden border border-blue-700"
+                    >
+                      <div className="absolute right-0 bottom-0 top-0 w-1/3 bg-radial from-white/15 to-transparent pointer-events-none" />
+                      
+                      <div className="space-y-3 max-w-lg z-10">
+                        <div className="text-[10px] font-black uppercase tracking-widest text-orange-400 bg-white/10 border border-white/15 px-3 py-1 rounded-full inline-block">
+                          Fidelidade Premium
+                        </div>
+                        <h3 className="text-2xl font-bold tracking-tight">
+                          Adira ao Premium Club SeuLugar
+                        </h3>
+                        <p className="text-xs text-blue-105 leading-relaxed font-semibold">
+                          Registe-se hoje para gerir os seus pedidos, e receba portes grátis em todas as compras físicas acima de Kz 50.000 em Angola!
+                        </p>
+                      </div>
+
+                      <div className="shrink-0 z-10">
+                        <button
+                          onClick={() => {
+                            setToastMessage('Em desenvolvimento');
+                          }}
+                          className="w-full md:w-auto px-6 py-3.5 bg-white text-[#2563EB] hover:bg-orange-50 font-black text-xs rounded-xl shadow-md transition-all active:scale-95 uppercase tracking-wider"
+                        >
+                          Explorar
+                        </button>
+                      </div>
+                    </motion.div>
+
                   </div>
                 )}
+
+                {/* THE ICECREAM EBOOK READER 6 THEMED PRODUCTS AREA */}
+                <LibraryShelf
+                  products={filteredProducts}
+                  allProducts={products}
+                  onViewDetails={(p) => setSelectedProduct(p)}
+                  onAddToCart={(p) => handleAddToCart(p, 1)}
+                  selectedCategory={selectedCategory}
+                  onSelectCategory={setSelectedCategory}
+                />
+
               </div>
             )}
           </div>
@@ -583,12 +591,14 @@ export default function App() {
         onRemoveFromCart={handleRemoveFromCart}
         onClearCart={handleClearCart}
         onPlaceOrder={handlePlaceOrder}
+        user={user}
       />
 
       <MyOrdersModal
         isOpen={isMyOrdersOpen}
         onClose={() => setIsMyOrdersOpen(false)}
         orders={orders}
+        products={products}
       />
 
       {/* Premium Toast notification overlay */}
