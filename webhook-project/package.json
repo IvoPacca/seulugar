@@ -1,0 +1,19 @@
+{
+  "name": "vercel-webhook-listener",
+  "version": "1.0.0",
+  "description": "A production-ready Webhook listener and logger for Vercel Serverless environment using pure JavaScript.",
+  "main": "api/webhook.js",
+  "scripts": {
+    "start": "vercel dev"
+  },
+  "keywords": [
+    "vercel",
+    "serverless",
+    "webhook",
+    "logger",
+    "javascript"
+  ],
+  "author": "AI Assistant",
+  "license": "MIT",
+  "dependencies": {}
+}
