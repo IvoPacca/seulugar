@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Webhook Listener - Vercel Serverless</title>
+  <!-- Tailwind CSS CDN para renderização imediata linda -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts Inter -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+    }
+    code {
+      font-family: 'JetBrains Mono', monospace;
+    }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col justify-between selection:bg-indigo-500 selection:text-white">
+
+  <!-- MAIN HEADER AREA -->
+  <main class="flex-1 flex flex-col items-center justify-center p-6 md:p-12">
+    <div class="max-w-3xl w-full space-y-8">
+      
+      <!-- STATUS BADGE & TITLE -->
+      <div class="text-center space-y-4">
+        <div class="inline-flex items-center gap-2.5 px-4 py-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full text-xs font-semibold uppercase tracking-wider animate-pulse">
+          <span class="w-2.5 h-2.5 bg-emerald-500 rounded-full"></span>
+          Sistema Online — Vercel Servidor Ativo
+        </div>
+        <h1 class="text-4xl md:text-5xl font-extrabold text-white tracking-tight leading-tight">
+          Webhook Listener <br class="hidden sm:inline"><span class="bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">Serverless Receiver</span>
+        </h1>
+        <p class="text-sm md:text-base text-slate-400 max-w-lg mx-auto font-medium">
+          Receba, valide, filtre e armazene requisições HTTP POST de qualquer plataforma em tempo real sem servidor dedicado.
+        </p>
+      </div>
+
+      <!-- MAIN CARD GRID INFO -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4">
+        
+        <!-- ENDPOINT DETAILS CARD -->
+        <div class="bg-slate-800/60 border border-slate-700/60 rounded-3xl p-6 md:p-8 space-y-6 shadow-xl backdrop-blur-sm">
+          <div class="space-y-2">
+            <h3 class="text-lg font-bold text-white flex items-center gap-2">
+              <span class="p-1 px-2 text-[10px] bg-indigo-500/20 text-indigo-400 rounded uppercase font-black">POST</span>
+              Endpoint de Entrada
+            </h3>
+            <p class="text-xs text-slate-400">Envie seus payloads externos para o seguinte endereço:</p>
+          </div>
+
+          <div class="bg-slate-950 rounded-2xl p-4 flex items-center justify-between border border-slate-800 gap-3">
+            <code id="endpointUrl" class="text-xs text-indigo-300 break-all select-all font-mono">/api/webhook</code>
+            <button onclick="copyEndpoint()" class="hover:bg-slate-800 text-slate-400 hover:text-white p-2 rounded-xl text-xs transition-all font-semibold shrink-0">
+              Copiar
+            </button>
+          </div>
+
+          <div class="space-y-3.5 pt-2">
+            <div class="flex items-start gap-3">
+              <span class="w-5 h-5 rounded-full bg-slate-700 flex items-center justify-center text-xs text-slate-300 font-bold shrink-0 mt-0.5">1</span>
+              <p class="text-xs text-slate-300">Aceita JSON de Stripe, WhatsApp, Evolution API, Mercado Pago, etc.</p>
+            </div>
+            <div class="flex items-start gap-3">
+              <span class="w-5 h-5 rounded-full bg-slate-700 flex items-center justify-center text-xs text-slate-300 font-bold shrink-0 mt-0.5">2</span>
+              <p class="text-xs text-slate-300">Requer cabeçalho <code class="text-indigo-400 px-1 bg-indigo-500/10 rounded">X-Webhook-Secret</code> para validação.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ACTIONS & QUICK COMMAND CARD -->
+        <div class="bg-slate-800/60 border border-slate-700/60 rounded-3xl p-6 md:p-8 flex flex-col justify-between gap-6 shadow-xl backdrop-blur-sm">
+          <div class="space-y-4">
+            <h3 class="text-lg font-bold text-white">Visualizador em Tempo Real</h3>
+            <p class="text-xs text-slate-400">
+              Acompanhe todas as entradas e conteúdos de payloads recebidos no nosso painel de logs completo.
+            </p>
+          </div>
+
+          <div class="space-y-3">
+            <a href="/logs" class="w-full py-4 text-center block bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm rounded-2xl shadow-lg shadow-indigo-600/10 transition-all hover:-translate-y-0.5 active:scale-95">
+              Aceder Painel de Logs →
+            </a>
+            <p class="text-[10px] text-center text-slate-500 font-semibold uppercase tracking-wider">
+              Nenhuma configuração ou banco de dados necessário
+            </p>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- INTERACTIVE CURL SHELL TESTER -->
+      <div class="bg-slate-950 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-slate-400 font-bold uppercase tracking-widest">Testar via Terminal (cURL)</span>
+          <span class="text-[10px] text-slate-500 font-mono">Token Padrão: meu_token_secreto_super_seguro</span>
+        </div>
+        <pre class="bg-slate-900 rounded-2xl p-4 overflow-x-auto text-xs text-cyan-300 border border-slate-800/60 leading-relaxed font-mono select-all">curl -X POST <span class="origin-url">https://seu-projeto.vercel.app</span>/api/webhook \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Secret: meu_token_secreto_super_seguro" \
+  -d '{
+    "event": "message.received",
+    "from": "244900000000",
+    "message": "Olá, teste de Webhook!"
+  }'</pre>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- STANDALONE FOOTER -->
+  <footer class="py-6 border-t border-slate-800/60 text-center">
+    <p class="text-xs text-slate-550 font-medium">
+      Pronto para Deploy na Vercel • Estrutura de Funções Serverless 100% Compatível
+    </p>
+  </footer>
+
+  <script>
+    // Define a URL de teste de forma dinâmica na interface
+    document.addEventListener('DOMContentLoaded', () => {
+      const currentHost = window.location.origin;
+      document.getElementById('endpointUrl').innerText = currentHost + '/api/webhook';
+      
+      const originElems = document.querySelectorAll('.origin-url');
+      originElems.forEach(el => {
+        el.innerText = currentHost;
+      });
+    });
+
+    function copyEndpoint() {
+      const url = document.getElementById('endpointUrl').innerText;
+      navigator.clipboard.writeText(url).then(() => {
+        alert('Endpoint copiado com sucesso!');
+      });
+    }
+  </script>
+</body>
+</html>
