@@ -35,9 +35,7 @@ service cloud.firestore {
           request.auth.token.email == 'ivoimbi5@gmail.com' ||
           request.auth.token.email.endsWith('@seulugar.ao')
         )) ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true)
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
 
@@ -77,6 +75,22 @@ service cloud.firestore {
         && data.created_at is string;
     }
 
+    // Validate WebhookLog schema properties
+    function isValidWebhookLog(data) {
+      return data.keys().hasAll(['id', 'receivedAt', 'method', 'url', 'ip', 'status'])
+        && data.id is string
+        && data.id.size() <= 128
+        && data.receivedAt is string
+        && data.method is string
+        && data.method.size() <= 16
+        && data.url is string
+        && data.url.size() <= 1024
+        && data.ip is string
+        && data.ip.size() <= 64
+        && data.status is string
+        && data.status.size() <= 32;
+    }
+
     // Match rules for UserProfiles
     match /users/{userId} {
       allow get: if isSignedIn() && (isOwner(userId) || isSystemAdmin());
@@ -105,6 +119,13 @@ service cloud.firestore {
     match /admins/{adminId} {
       allow read: if isSignedIn();
       allow write: if isSystemAdmin();
+    }
+
+    // Match rules for Webhook Logs
+    match /webhook_logs/{logId} {
+      allow read: if isSystemAdmin();
+      allow create: if isValidWebhookLog(incoming());
+      allow update, delete: if isSystemAdmin();
     }
   }
 }

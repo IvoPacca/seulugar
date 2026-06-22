@@ -91,6 +91,51 @@
         "status",
         "created_at"
       ]
+    },
+    "WebhookLog": {
+      "title": "WebhookLog",
+      "description": "Stores incoming payment webhook events for auditing, testing and logs.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "receivedAt": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object"
+        },
+        "body": {
+          "type": "object"
+        },
+        "query": {
+          "type": "object"
+        },
+        "ip": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "statusMessage": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "receivedAt",
+        "method",
+        "url",
+        "ip",
+        "status"
+      ]
     }
   },
   "firestore": {
@@ -101,6 +146,10 @@
     "orders/{orderId}": {
       "schema": "Order",
       "description": "Stores transactions, product indexes, and checkout delivery addresses."
+    },
+    "webhook_logs/{logId}": {
+      "schema": "WebhookLog",
+      "description": "Stores incoming system webhook logs for auditing."
     }
   }
 }
