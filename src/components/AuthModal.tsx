@@ -47,7 +47,15 @@ export default function AuthModal({ isOpen, onClose, onAuthSuccess }: AuthModalP
       onClose();
     } catch (e: any) {
       console.error(e);
-      setError('Erro ao autenticar com o Google. Certifique-se de que as janelas de pop-up estão ativadas.');
+      if (e?.code === 'auth/popup-closed-by-user') {
+        setError('O início de sessão foi cancelado porque fechou a janela de autenticação.');
+      } else if (e?.code === 'auth/popup-blocked') {
+        setError('A janela de autenticação foi bloqueada pelo seu navegador. Por favor, permita pop-ups para este site.');
+      } else if (e?.code === 'auth/cancelled-popup-request') {
+        setError(null);
+      } else {
+        setError('Erro ao autenticar com o Google. Certifique-se de que as janelas de pop-up estão ativadas.');
+      }
     } finally {
       setLoading(false);
     }

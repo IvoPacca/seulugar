@@ -8,9 +8,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Database, Upload, Plus, Trash2, Settings, ClipboardList, CheckCircle, 
   Download, LayoutDashboard, Copy, Check, Info, FileText, AlertTriangle,
-  Edit3, DollarSign, TrendingUp, ShoppingBag, BarChart3, X, FileSignature
+  Edit3, DollarSign, TrendingUp, ShoppingBag, BarChart3, X, FileSignature,
+  Terminal, Globe, Activity, FileCode, RefreshCw, Play, Radio
 } from 'lucide-react';
-import { Product, Order, OrderStatus } from '../types';
+import { Product, Order, OrderStatus, WebhookLog, UserProfile } from '../types';
+import { db } from '../firebase';
+import { collection, query, orderBy, onSnapshot, doc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { 
   getSupabaseCredentials, saveSupabaseCredentials, clearSupabaseCredentials, 
   createProductInDatabase, deleteProductFromDatabase, updateProductInDatabase, uploadProductImage 
@@ -23,6 +26,7 @@ interface AdminPanelProps {
   onRefreshProducts: () => Promise<void>;
   onRefreshOrders: () => Promise<void>;
   onUpdateOrderStatus: (orderId: string, status: OrderStatus) => Promise<void>;
+  user: UserProfile | null;
 }
 
 export default function AdminPanel({
@@ -30,9 +34,45 @@ export default function AdminPanel({
   orders,
   onRefreshProducts,
   onRefreshOrders,
-  onUpdateOrderStatus
+  onUpdateOrderStatus,
+  user
 }: AdminPanelProps) {
-  const [activeTab, setActiveTab] = useState<'catalog' | 'orders' | 'finance' | 'supabase'>('catalog');
+  const [activeTab, setActiveTab] = useState<'catalog' | 'orders' | 'finance' | 'supabase' | 'webhooks'>('catalog');
+  
+  // Webhook Console States
+  const [webhookLogs, setWebhookLogs] = useState<WebhookLog[]>([]);
+  const [selectedLog, setSelectedLog] = useState<WebhookLog | null>(null);
+  const [urlCopied, setUrlCopied] = useState(false);
+  const [selectedSimOrderId, setSelectedSimOrderId] = useState('');
+  const [simPayloadType, setSimPayloadType] = useState<'paypay' | 'multicaixa' | 'custom'>('paypay');
+  const [customPayloadText, setCustomPayloadText] = useState('{\n  "event": "payment.success",\n  "amount": 25000\n}');
+
+  // Firestore Webhook Log Listener
+  useEffect(() => {
+    if (!user || !user.isAdmin) {
+      setWebhookLogs([]);
+      return;
+    }
+
+    const q = query(collection(db, 'webhook_logs'), orderBy('receivedAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const logs: WebhookLog[] = [];
+      snapshot.forEach((doc) => {
+        logs.push(doc.data() as WebhookLog);
+      });
+      setWebhookLogs(logs);
+    }, (error) => {
+      console.warn("Webhook log access unauthorized or loading: ", error.message);
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  // Set first log as active once loaded if none is active
+  useEffect(() => {
+    if (webhookLogs.length > 0 && !selectedLog) {
+      setSelectedLog(webhookLogs[0]);
+    }
+  }, [webhookLogs, selectedLog]);
   
   // Products form state
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -43,6 +83,13 @@ export default function AdminPanel({
   const [prodType, setProdType] = useState<'physical' | 'digital'>('physical');
   const [prodStock, setProdStock] = useState<number>(10);
   const [prodDigitalLink, setProdDigitalLink] = useState('');
+  
+  // Custom Product configurations
+  const [prodColors, setProdColors] = useState('');
+  const [prodFreeShipping, setProdFreeShipping] = useState(false);
+  const [prodQtyDiscountMin, setProdQtyDiscountMin] = useState<number | ''>('');
+  const [prodQtyDiscountPercent, setProdQtyDiscountPercent] = useState<number | ''>('');
+  const [prodQtyFreeShippingMin, setProdQtyFreeShippingMin] = useState<number | ''>('');
   
   // Upload states
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -77,6 +124,11 @@ CREATE TABLE public.products (
   type text CHECK (type IN ('physical', 'digital')) NOT NULL,
   stock integer DEFAULT 0,
   digital_link text,
+  colors text[],
+  free_shipping boolean DEFAULT false,
+  qty_discount_min integer,
+  qty_discount_percent integer,
+  qty_free_shipping_min integer,
   created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
@@ -113,6 +165,11 @@ CREATE POLICY "Admin controle total" ON public.products
     setProdType(product.type);
     setProdStock(product.stock || 0);
     setProdDigitalLink(product.digital_link || '');
+    setProdColors(product.colors ? product.colors.join(', ') : '');
+    setProdFreeShipping(!!product.free_shipping);
+    setProdQtyDiscountMin(product.qty_discount_min ?? '');
+    setProdQtyDiscountPercent(product.qty_discount_percent ?? '');
+    setProdQtyFreeShippingMin(product.qty_free_shipping_min ?? '');
     setImageUrl(product.image_url || '');
     setImageFile(null);
     setPdfFile(null);
@@ -127,6 +184,11 @@ CREATE POLICY "Admin controle total" ON public.products
     setProdPrice(0);
     setProdStock(10);
     setProdDigitalLink('');
+    setProdColors('');
+    setProdFreeShipping(false);
+    setProdQtyDiscountMin('');
+    setProdQtyDiscountPercent('');
+    setProdQtyFreeShippingMin('');
     setImageFile(null);
     setPdfFile(null);
     setImageUrl('');
@@ -154,6 +216,13 @@ CREATE POLICY "Admin controle total" ON public.products
         finalDigitalLink = await uploadProductImage(pdfFile);
       }
 
+      // If digital and no custom download link or PDF file has been specified, default to KambaPay
+      if (prodType === 'digital' && !finalDigitalLink) {
+        finalDigitalLink = 'https://pay.kambafy.com/checkout/78f5636b-2683-410f-9ba6-7b3e53071c43';
+      }
+
+      const colorsArray = prodColors ? prodColors.split(',').map(c => c.trim()).filter(Boolean) : [];
+
       const payload = {
         name: prodName.trim(),
         description: prodDesc.trim(),
@@ -162,7 +231,12 @@ CREATE POLICY "Admin controle total" ON public.products
         type: prodType,
         stock: prodType === 'digital' ? 99999 : Number(prodStock),
         image_url: finalImgUrl,
-        digital_link: prodType === 'digital' ? finalDigitalLink : undefined
+        digital_link: prodType === 'digital' ? finalDigitalLink : undefined,
+        colors: colorsArray,
+        free_shipping: prodType === 'physical' ? prodFreeShipping : false,
+        qty_discount_min: prodType === 'physical' && prodQtyDiscountMin !== '' ? Number(prodQtyDiscountMin) : undefined,
+        qty_discount_percent: prodType === 'physical' && prodQtyDiscountPercent !== '' ? Number(prodQtyDiscountPercent) : undefined,
+        qty_free_shipping_min: prodType === 'physical' && prodQtyFreeShippingMin !== '' ? Number(prodQtyFreeShippingMin) : undefined
       };
 
       if (editingProduct) {
@@ -186,6 +260,11 @@ CREATE POLICY "Admin controle total" ON public.products
       setProdPrice(0);
       setProdStock(10);
       setProdDigitalLink('');
+      setProdColors('');
+      setProdFreeShipping(false);
+      setProdQtyDiscountMin('');
+      setProdQtyDiscountPercent('');
+      setProdQtyFreeShippingMin('');
       setImageFile(null);
       setPdfFile(null);
       setImageUrl('');
@@ -295,6 +374,14 @@ CREATE POLICY "Admin controle total" ON public.products
           >
             Supabase Config
             <span className={`w-2 h-2 rounded-full ${isConfigured ? 'bg-green-400' : 'bg-gray-400'}`} />
+          </button>
+          <button
+            onClick={() => setActiveTab('webhooks')}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center gap-1 ${
+              activeTab === 'webhooks' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <Terminal className="w-3.5 h-3.5" /> Console Webhook ({webhookLogs.length})
           </button>
         </div>
       </div>
@@ -425,9 +512,86 @@ CREATE POLICY "Admin controle total" ON public.products
                   )}
                 </div>
 
+                {/* CORES DO PRODUTO */}
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 mb-1">CORES DISPONÍVEIS (SEPARADAS POR VÍRGULA)</label>
+                  <input
+                    type="text"
+                    value={prodColors}
+                    onChange={(e) => setProdColors(e.target.value)}
+                    placeholder="Ex: Preto, Azul, Vermelho, Branco"
+                    className="w-full px-3 py-2 text-xs bg-gray-50 border border-gray-200 outline-none rounded-lg focus:border-blue-600 focus:bg-white text-gray-800 font-semibold"
+                  />
+                </div>
+
+                {prodType === 'physical' && (
+                  <div className="p-3.5 bg-blue-50/50 border border-blue-100/60 rounded-xl space-y-3.5">
+                    <span className="block text-[10px] uppercase font-bold text-blue-650 tracking-wider">Opções de Entrega & Descontos</span>
+                    
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="checkbox-free-shipping"
+                        checked={prodFreeShipping}
+                        onChange={(e) => setProdFreeShipping(e.target.checked)}
+                        className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
+                      />
+                      <label htmlFor="checkbox-free-shipping" className="text-xs font-semibold text-gray-700 cursor-pointer select-none">
+                        Oferecer Entrega Grátis de forma padrão para este produto
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 pt-1 border-t border-gray-200/40">
+                      <div>
+                        <label className="block text-[9px] font-bold text-gray-500 mb-1">QTD MÍN. ENTREGA GRÁTIS</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={prodQtyFreeShippingMin}
+                          onChange={(e) => setProdQtyFreeShippingMin(e.target.value === '' ? '' : Number(e.target.value))}
+                          placeholder="Ex: 3"
+                          className="w-full px-3 py-1.5 text-[11px] bg-white border border-gray-200 outline-none rounded-lg focus:border-blue-650 text-gray-800 font-bold"
+                        />
+                      </div>
+                      <div className="flex items-end text-[10px] text-gray-400 font-semibold pb-1.5 leading-tight">
+                        Se comprar {prodQtyFreeShippingMin || 'X'} ou mais unidades, entrega é grátis.
+                      </div>
+                    </div>
+
+                    <div className="border-t border-gray-200/40 pt-2 space-y-2.5">
+                      <span className="block text-[9px] uppercase font-bold text-gray-500 tracking-wider">Desconto progressivo em quantidade</span>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[9px] font-bold text-gray-500 mb-1">MIN QUANTIDADE para desconto</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={prodQtyDiscountMin}
+                            onChange={(e) => setProdQtyDiscountMin(e.target.value === '' ? '' : Number(e.target.value))}
+                            placeholder="Ex: 5"
+                            className="w-full px-3 py-1.5 text-[11px] bg-white border border-gray-200 outline-none rounded-lg focus:border-blue-650 text-gray-800 font-bold"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[9px] font-bold text-gray-500 mb-1">DESCONTO (%)</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={100}
+                            value={prodQtyDiscountPercent}
+                            onChange={(e) => setProdQtyDiscountPercent(e.target.value === '' ? '' : Number(e.target.value))}
+                            placeholder="Ex: 15"
+                            className="w-full px-3 py-1.5 text-[11px] bg-white border border-gray-200 outline-none rounded-lg focus:border-blue-650 text-gray-800 font-bold"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {prodType === 'digital' && (
                   <div className="p-3 bg-orange-50/50 border border-[#F97316]/30 rounded-xl space-y-2">
-                    <span className="block text-[10px] font-bold text-[#F97316]">PDF DO LIVRO DIGITAL / ARQUIVO</span>
+                    <span className="block text-[10px] font-bold text-[#F97316]">PDF DO LIVRO DIGITAL / CHECKOUT CUSTOMIZADO</span>
                     
                     <input
                       type="file"
@@ -440,13 +604,13 @@ CREATE POLICY "Admin controle total" ON public.products
                       className="text-[11px] text-gray-500 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-[10px] file:font-semibold file:bg-orange-100 file:text-orange-700 hover:file:bg-orange-200 cursor-pointer"
                     />
                     
-                    <div className="text-center text-[9px] text-gray-400 font-bold">OU USE LINK EXTERNO ABAIXO</div>
+                    <div className="text-center text-[9px] text-gray-400 font-bold">OU INTRODUZA O LINK DE CHECKOUT CUSTOMIZADO ABAIXO</div>
 
                     <input
                       type="url"
                       value={prodDigitalLink}
                       onChange={(e) => setProdDigitalLink(e.target.value)}
-                      placeholder="https://sua-url.com/pdf-ou-chave"
+                      placeholder="https://pay.kambafy.com/checkout/id-do-checkout-de-venda"
                       className="w-full px-3 py-1.5 text-[11px] bg-white border border-gray-200 outline-none rounded-lg focus:border-[#F97316] text-gray-800 font-mono"
                     />
                     
@@ -993,6 +1157,419 @@ CREATE POLICY "Admin controle total" ON public.products FOR ALL USING (true);`}
                   </form>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 5: WEBHOOK LIVE STREAM CONSOLE */}
+        {activeTab === 'webhooks' && (
+          <div className="space-y-6">
+            {/* Top Widget: Webhook Info and Simulator */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-fadeIn">
+              
+              {/* Left Side: Your Webhook Site URL */}
+              <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-3xl p-6 text-slate-100 shadow-xl space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Globe className="w-5 h-5 text-indigo-400 stroke-[2] animate-pulse" />
+                    <span className="text-sm font-bold tracking-tight text-white uppercase font-mono">
+                      URL de Endpoint Real-time
+                    </span>
+                  </div>
+                  <span className="text-[10px] uppercase font-bold tracking-wider bg-indigo-500/25 text-indigo-300 border border-indigo-500/20 px-2 py-0.5 rounded">
+                    POST Webhook
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Utilize este URL de gateway para transmitir e encaminhar eventos reais do PayPay, Multicaixa ou talões eletrónicos. O sistema ouvirá, registará e processará a conciliação das faturas atômicas no banco de dados.
+                </p>
+
+                <div className="flex items-center gap-2 p-2.5 bg-slate-950/80 border border-slate-800 rounded-2xl">
+                  <input
+                    type="text"
+                    readOnly
+                    value={window.location.origin + '/api/webhook'}
+                    className="flex-1 bg-transparent border-0 outline-none text-xs text-indigo-300 font-mono pl-2 font-semibold select-all"
+                  />
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(window.location.origin + '/api/webhook');
+                      setUrlCopied(true);
+                      setTimeout(() => setUrlCopied(false), 2000);
+                    }}
+                    className="flex items-center gap-1 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-semibold text-[11px] px-3.5 py-2 rounded-xl transition-all shadow-md shrink-0 cursor-pointer"
+                  >
+                    {urlCopied ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 stroke-[3]" /> Copiado
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" /> Copiar URL
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-4 text-[10.5px] text-slate-400 font-mono bg-slate-950/45 p-3 rounded-xl border border-slate-800/30">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                    <span>A Escutar na Porta 3000</span>
+                  </div>
+                  <span>•</span>
+                  <span>Verificação SSL: Ativa</span>
+                  <span>•</span>
+                  <div className="flex items-center gap-1 text-slate-300">
+                    <Activity className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                    <span>Rebatedor Webhook.site</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Side: Simulator Area */}
+              <div className="lg:col-span-5 bg-white border border-gray-150 rounded-3xl p-6 shadow-sm space-y-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-bold text-gray-905 text-sm flex items-center gap-1.5">
+                    <Play className="w-4 h-4 text-indigo-600 stroke-[2.5]" /> Simulador de Pagamentos (Sandbox)
+                  </h4>
+                  <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-bold uppercase">
+                    Test Payload
+                  </span>
+                </div>
+
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  Despache um callback simulado utilizando encomendas pendentes para simular faturamento automático e stock instantâneo.
+                </p>
+
+                <div className="space-y-3.5">
+                  {/* Select Order */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase">Escolha a Encomenda para Teste</label>
+                    <select
+                      value={selectedSimOrderId}
+                      onChange={(e) => setSelectedSimOrderId(e.target.value)}
+                      className="w-full px-3.5 py-2.5 text-xs bg-gray-50 border border-gray-200 outline-none rounded-xl focus:border-indigo-600 focus:bg-white text-gray-800 font-medium cursor-pointer"
+                    >
+                      <option value="">-- Nenhuma Encomenda Selecionada (Apenas Registo de Log) --</option>
+                      {orders.filter(o => o.status === 'pending').map(o => (
+                        <option key={o.id} value={o.id}>
+                          {o.id} - {o.userName} ({formatKwanza(o.totalPrice)})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Selector for payload structure */}
+                  <div className="flex gap-1.5 bg-gray-105 p-1 rounded-xl">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSimPayloadType('paypay');
+                        setCustomPayloadText(JSON.stringify({
+                          event: "payment.success",
+                          platform: "paypay",
+                          orderId: selectedSimOrderId || "SL-SIMULADO",
+                          amount: 25000,
+                          reference: "PAYPAY-TRF82749",
+                          status: "COMPLETED",
+                          customer: { name: "Ivo Imbi", email: "ivoimbi5@gmail.com" }
+                        }, null, 2));
+                      }}
+                      className={`flex-1 py-1.5 text-[10.5px] font-bold rounded-lg transition-all text-center cursor-pointer ${
+                        simPayloadType === 'paypay' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-900'
+                      }`}
+                    >
+                      PayPay
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSimPayloadType('multicaixa');
+                        setCustomPayloadText(JSON.stringify({
+                          event: "payment.success",
+                          platform: "multicaixa_express",
+                          transaction: {
+                            id: "MCX-" + Math.floor(Math.random() * 900000),
+                            order_id: selectedSimOrderId || "SL-SIMULADO",
+                            value: 25000,
+                            code: "REF98374928"
+                          },
+                          timestamp: new Date().toISOString()
+                        }, null, 2));
+                      }}
+                      className={`flex-1 py-1.5 text-[10.5px] font-bold rounded-lg transition-all text-center cursor-pointer ${
+                        simPayloadType === 'multicaixa' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-900'
+                      }`}
+                    >
+                      Multicaixa Express
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSimPayloadType('custom')}
+                      className={`flex-1 py-1.5 text-[10.5px] font-bold rounded-lg transition-all text-center cursor-pointer ${
+                        simPayloadType === 'custom' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-900'
+                      }`}
+                    >
+                      Customizado
+                    </button>
+                  </div>
+
+                  {/* Textarea custom payload */}
+                  {simPayloadType === 'custom' && (
+                    <div>
+                      <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase">Payload JSON</label>
+                      <textarea
+                        value={customPayloadText}
+                        onChange={(e) => setCustomPayloadText(e.target.value)}
+                        rows={4}
+                        className="w-full px-3 py-2 text-xs bg-gray-50 border border-gray-200 outline-none rounded-xl focus:border-indigo-600 focus:bg-white text-gray-800 font-mono"
+                      />
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      let bodyObj: any;
+                      if (simPayloadType === 'paypay') {
+                        bodyObj = {
+                          event: "payment.success",
+                          platform: "paypay",
+                          orderId: selectedSimOrderId || "SL-SIMULADO",
+                          amount: 25000,
+                          reference: "PP-" + Math.floor(Math.random() * 9000000),
+                          status: "COMPLETED",
+                          customer: { name: "Ivo Imbi", email: "ivoimbi5@gmail.com" }
+                        };
+                      } else if (simPayloadType === 'multicaixa') {
+                        bodyObj = {
+                          event: "payment.success",
+                          platform: "multicaixa_express",
+                          transaction: {
+                            id: "MCX-" + Math.floor(Math.random() * 9000000),
+                            order_id: selectedSimOrderId || "SL-SIMULADO",
+                            value: 25000,
+                            code: "TX-" + Math.floor(Math.random() * 10000000)
+                          },
+                          timestamp: new Date().toISOString()
+                        };
+                      } else {
+                        try {
+                          bodyObj = JSON.parse(customPayloadText);
+                          if (selectedSimOrderId) {
+                            bodyObj.orderId = selectedSimOrderId;
+                          }
+                        } catch (err) {
+                          alert('JSON inválido fornecido!');
+                          return;
+                        }
+                      }
+
+                      try {
+                        const response = await fetch('/api/webhook', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify(bodyObj)
+                        });
+                        await response.json();
+                        await onRefreshOrders(); 
+                      } catch (err: any) {
+                        alert(`Erro de rede ao enviar webhook: ${err.message || String(err)}`);
+                      }
+                    }}
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-705 text-white font-bold text-xs rounded-xl transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" /> Enviar Chamada Webhook
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Main Section: Interactive Webhook Feed */}
+            <div className="border border-gray-150 rounded-3xl bg-white shadow-sm overflow-hidden animate-fadeIn">
+              <div className="p-5 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-1 px-2.5 bg-indigo-50 border border-indigo-100 text-indigo-700 text-[10px] font-bold rounded-md uppercase tracking-wider flex items-center gap-1">
+                    <Radio className="w-3.5 h-3.5 text-indigo-600 stroke-[3] animate-pulse" /> Live Logs
+                  </div>
+                  <h3 className="font-bold text-gray-900 text-sm">Histórico e Rebata de Eventos recebidos</h3>
+                </div>
+
+                <button
+                  onClick={async () => {
+                    if (window.confirm('Tem a certeza que deseja limpar todo o histórico de Webhooks?')) {
+                      try {
+                        const batch = writeBatch(db);
+                        webhookLogs.forEach((l) => {
+                          batch.delete(doc(db, 'webhook_logs', l.id));
+                        });
+                        await batch.commit();
+                        setSelectedLog(null);
+                      } catch (err: any) {
+                        alert(`Erro ao limpar histórico: ${err.message || String(err)}`);
+                      }
+                    }
+                  }}
+                  disabled={webhookLogs.length === 0}
+                  className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-red-50 hover:bg-red-100 disabled:bg-gray-50 disabled:text-gray-300 text-red-650 transition-all flex items-center gap-1 border border-red-100 disabled:border-transparent cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Limpar Histórico
+                </button>
+              </div>
+
+              {webhookLogs.length === 0 ? (
+                <div className="py-24 text-center space-y-3.5">
+                  <div className="w-12 h-12 bg-slate-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
+                    <Terminal className="w-6 h-6" />
+                  </div>
+                  <div className="max-w-xs mx-auto space-y-1">
+                    <h5 className="font-bold text-gray-800 text-sm">Sem eventos recebidos no webhook</h5>
+                    <p className="text-xs text-gray-400">Pressione no botão acima para submeter um evento demonstrativo, ou acople qualquer gateway de pagamento externo em tempo real.</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-12 min-h-[480px]">
+                  
+                  {/* Left Column: Webhook list */}
+                  <div className="md:col-span-5 border-r border-gray-250 max-h-[580px] overflow-y-auto divide-y divide-gray-100">
+                    {webhookLogs.map((log) => {
+                      const isSelected = selectedLog && selectedLog.id === log.id;
+                      const isSuccess = log.status === 'processed';
+                      const isError = log.status === 'error';
+                      
+                      return (
+                        <div
+                          key={log.id}
+                          onClick={() => setSelectedLog(log)}
+                          className={`p-4 transition-all cursor-pointer select-none space-y-2 ${
+                            isSelected ? 'bg-indigo-50/20 border-l-4 border-indigo-600 font-bold' : 'bg-white hover:bg-gray-50/40'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono text-xs font-bold text-slate-800">{log.id}</span>
+                            <span className="text-[10px] text-gray-400 font-mono">
+                              {new Date(log.receivedAt).toLocaleTimeString()}
+                            </span>
+                          </div>
+                          
+                          <div className="flex items-center gap-1.5 justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded text-slate-600 font-bold uppercase tracking-wider font-mono">
+                                {log.method}
+                              </span>
+                              <span className="text-[11px] font-mono text-gray-500 max-w-[140px] truncate">
+                                {log.url}
+                              </span>
+                            </div>
+
+                            <span className={`text-[9.5px] px-2 py-0.5 rounded font-bold uppercase ${
+                              isSuccess ? 'bg-green-100 text-green-800 border border-green-200' :
+                              isError ? 'bg-red-100 text-red-800 border border-red-200' :
+                              'bg-indigo-100 text-indigo-805 border border-indigo-200'
+                            }`}>
+                              {log.status === 'processed' ? 'PROCESSADO' : log.status === 'error' ? 'ERRO' : 'REGISTADO'}
+                            </span>
+                          </div>
+
+                          <p className="text-[11px] text-gray-500 truncate leading-snug">
+                            {log.statusMessage || log.ip}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Right Column: Webhook Log Detail View */}
+                  <div className="md:col-span-7 bg-gray-50/40 p-6 flex flex-col justify-between max-h-[580px] overflow-y-auto">
+                    {selectedLog ? (
+                      <div className="space-y-6">
+                        
+                        {/* Detail Header Info */}
+                        <div className="flex justify-between items-start gap-4 flex-wrap border-b border-gray-150 pb-4">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <h4 className="font-mono font-bold text-gray-900 text-base">{selectedLog.id}</h4>
+                              <span className="text-[10px] bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded-md font-bold uppercase">
+                                POST Webhook
+                              </span>
+                            </div>
+                            <div className="text-xs text-gray-400 font-mono">
+                              Recebido de <strong className="text-gray-600">{selectedLog.ip}</strong> em {new Date(selectedLog.receivedAt).toLocaleString()}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Status Message Alert Panel */}
+                        <div className={`p-4 rounded-2xl border flex items-start gap-3 ${
+                          selectedLog.status === 'processed' ? 'bg-green-50/50 border-green-150 text-green-905' :
+                          selectedLog.status === 'error' ? 'bg-red-50/50 border-red-150 text-red-905' :
+                          'bg-indigo-50/30 border-indigo-150 text-indigo-905'
+                        }`}>
+                          <div className="p-1 px-2.5 rounded bg-white border font-bold text-[10px] font-mono uppercase tracking-wide shrink-0">
+                            200 OK
+                          </div>
+                          <div className="space-y-0.5 text-xs">
+                            <p className="font-bold">Resultado do Processamento</p>
+                            <p className="opacity-90 leading-relaxed font-medium">{selectedLog.statusMessage || 'Sem mensagem adicional de processamento.'}</p>
+                          </div>
+                        </div>
+
+                        {/* Event Data body tabs - replicating Webhook.site */}
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-1.5 border-b border-gray-150 pb-2">
+                            <FileCode className="w-4 h-4 text-indigo-600" />
+                            <span className="text-xs font-bold text-gray-800 uppercase tracking-wide">Corpo da Requisição (POST Body)</span>
+                          </div>
+                          
+                          <pre className="text-xs text-slate-100 font-mono bg-slate-900 p-4 rounded-2xl border border-slate-800 overflow-x-auto shadow-inner leading-relaxed max-h-[220px]">
+                            {JSON.stringify(selectedLog.body, null, 2)}
+                          </pre>
+                        </div>
+
+                        {/* Request Headers and Query parameters section */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {/* Query Strings */}
+                          <div className="p-4 bg-white border border-gray-150 rounded-2xl text-xs space-y-2.5">
+                            <div className="font-bold text-gray-800 uppercase tracking-wide border-b border-gray-100 pb-1.5">Parâmetros (Query)</div>
+                            {Object.keys(selectedLog.query || {}).length === 0 ? (
+                              <span className="text-gray-400 italic font-mono text-[11px] block">Nenhum parâmetro detectado</span>
+                            ) : (
+                              <div className="space-y-1.5 font-mono text-[11px]">
+                                {Object.entries(selectedLog.query || {}).map(([key, val]) => (
+                                  <div key={key} className="flex flex-wrap justify-between gap-1 border-b border-gray-50 pb-1 last:border-0">
+                                    <strong className="text-gray-500">{key}:</strong>
+                                    <span className="text-indigo-600 word-break font-bold bg-indigo-50 px-1 hover:bg-indigo-100 select-all">{val}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Headers */}
+                          <div className="p-4 bg-white border border-gray-150 rounded-2xl text-xs space-y-2.5">
+                            <div className="font-bold text-gray-800 uppercase tracking-wide border-b border-gray-100 pb-1.5">Cabeçalhos (Headers)</div>
+                            <div className="space-y-1.5 font-mono text-[10px] max-h-[140px] overflow-y-auto pb-1">
+                              {Object.entries(selectedLog.headers || {}).map(([key, val]) => (
+                                <div key={key} className="flex justify-between gap-1 truncate border-b border-gray-50 pb-1 last:border-0" title={`${key}: ${val}`}>
+                                  <strong className="text-gray-400 capitalize">{key.replace(/_/g, '-')}:</strong>
+                                  <span className="text-gray-700 max-w-[125px] truncate select-all">{val}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                      </div>
+                    ) : (
+                      <div className="py-24 text-center">
+                        <p className="text-xs text-gray-400 italic">Selecione uma chamada do webhook eletrónico na lateral esquerda para inspeção detalhada.</p>
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              )}
             </div>
           </div>
         )}

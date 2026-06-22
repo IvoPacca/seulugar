@@ -6,16 +6,17 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, ExternalLink, Download, Clock, CheckCircle2, ShieldAlert, Ban } from 'lucide-react';
-import { Order, OrderItem } from '../types';
+import { Order, OrderItem, Product } from '../types';
 import { formatKwanza } from '../utils';
 
 interface MyOrdersModalProps {
   isOpen: boolean;
   onClose: () => void;
   orders: Order[];
+  products?: Product[];
 }
 
-export default function MyOrdersModal({ isOpen, onClose, orders }: MyOrdersModalProps) {
+export default function MyOrdersModal({ isOpen, onClose, orders, products = [] }: MyOrdersModalProps) {
   if (!isOpen) return null;
 
   return (
@@ -85,6 +86,11 @@ export default function MyOrdersModal({ isOpen, onClose, orders }: MyOrdersModal
                       <div className="mt-3 space-y-3">
                         {o.items.map((item, idx) => {
                           const isDigital = item.type === 'digital';
+                          const prodFromCatalog = products.find(p => p.id === item.productId);
+                          const isLocalPlaceholder = item.digital_link === '[data_link_local]';
+                          const downloadUrl = (isLocalPlaceholder || !item.digital_link)
+                            ? (prodFromCatalog?.digital_link || '#')
+                            : item.digital_link;
                           
                           return (
                             <div key={idx} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs pb-3 border-b border-dashed border-gray-100 last:border-0 last:pb-0">
@@ -98,7 +104,7 @@ export default function MyOrdersModal({ isOpen, onClose, orders }: MyOrdersModal
                                   <div>
                                     {isPaid ? (
                                       <a
-                                        href={item.digital_link || '#'}
+                                        href={downloadUrl}
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[10px] font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg shadow-sm"
